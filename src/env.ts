@@ -1,4 +1,13 @@
-import { envsafe, str, bool } from "envsafe";
+import { envsafe, str, bool, makeValidator } from "envsafe";
+
+const mode = makeValidator<string>((input) => {
+  const validModes = ['backup', 'restore'];
+  const lowerInput = input.toLowerCase();
+  if (!validModes.includes(lowerInput)) {
+    throw new Error(`MODE must be one of: ${validModes.join(', ')}`);
+  }
+  return lowerInput;
+});
 
 export const env = envsafe({
   AWS_ACCESS_KEY_ID: str(),
@@ -49,6 +58,40 @@ export const env = envsafe({
   }),
   BACKUP_OPTIONS: str({
     desc: 'Any valid pg_dump option.',
+    default: '',
+    allowEmpty: true,
+  }),
+  MODE: mode({
+    desc: 'Operation mode: backup or restore',
+    default: 'backup',
+  }),
+  RESTORE_DATABASE_URL: str({
+    desc: 'The connection string of the database to restore to.',
+    default: '',
+    allowEmpty: true,
+  }),
+  RESTORE_FILE_KEY: str({
+    desc: 'Specific S3 key to restore from. If empty, uses latest.',
+    default: '',
+    allowEmpty: true,
+  }),
+  RESTORE_CRON_SCHEDULE: str({
+    desc: 'The cron schedule to run the restore on.',
+    default: '',
+    allowEmpty: true
+  }),
+  RESTORE_RUN_ON_STARTUP: bool({
+    desc: 'Run a restore on startup of this application',
+    default: false,
+    allowEmpty: true,
+  }),
+  RESTORE_SINGLE_SHOT_MODE: bool({
+    desc: 'Run a single restore on start and exit when completed',
+    default: false,
+    allowEmpty: true,
+  }),
+  RESTORE_OPTIONS: str({
+    desc: 'Any valid pg_restore option.',
     default: '',
     allowEmpty: true,
   }),
