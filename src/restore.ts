@@ -87,9 +87,47 @@ const decompressFile = async (filepath: string): Promise<string> => {
   return decompressedPath;
 };
 
+const terminateConnections = async (databaseUrl: string) => {
+  log("Terminating existing database connections...");
+
+  // Extract database name from URL using RegExp.exec()
+  const dbNameRegex = /\/([^/?]+)(\?|$)/;
+  const dbNameMatch = dbNameRegex.exec(databaseUrl);
+  if (!dbNameMatch) {
+    throw new Error("Could not extract database name from URL");
+  }
+  const dbName = dbNameMatch[1];
+
+  // Create connection URL to postgres database (not target db)
+  const adminUrl = databaseUrl.replace(/\/[^/?]+(\?|$)/, '/postgres$1');
+
+  const escapedAdminUrl = escapeShellArg(adminUrl);
+  const terminateQuery = `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '${dbName}' AND pid <> pg_backend_pid();`;
+
+  await new Promise<void>((resolve) => {
+    exec(`psql ${escapedAdminUrl} -c "${terminateQuery}"`, (_error, _stdout, stderr) => {
+      // Ignore errors - connections might not exist
+      if (stderr && !stderr.includes('No connections')) {
+        logStderr(stderr.trimEnd(), "psql");
+      }
+      resolve();
+    });
+  });
+
+  log("  - Existing connections terminated");
+};
+
 const restoreFromFile = async (filepath: string) => {
   if (!env.RESTORE_DATABASE_URL) {
     throw new Error("RESTORE_DATABASE_URL is required for restore mode");
+  }
+
+  // Terminate existing connections before restore
+  try {
+    await terminateConnections(env.RESTORE_DATABASE_URL);
+  } catch (terminateError) {
+    log(`Warning: Could not terminate connections - ${terminateError}`);
+    log("Continuing with restore anyway...");
   }
 
   const dbHost = extractDatabaseHost(env.RESTORE_DATABASE_URL);
