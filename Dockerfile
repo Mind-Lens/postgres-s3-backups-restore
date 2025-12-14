@@ -26,6 +26,6 @@ ARG PG_VERSION='16'
 
 RUN apk add --update --no-cache postgresql${PG_VERSION}-client
 
-CMD pg_isready --dbname=$BACKUP_DATABASE_URL && \
+CMD echo "Starting PostgreSQL backup/restore service..." && \
     pg_dump --version && \
     node dist/index.js
