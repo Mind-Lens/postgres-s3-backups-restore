@@ -39,8 +39,13 @@ if (env.MODE === 'backup') {
 
 logBanner("PostgreSQL Backup/Restore Service", bannerDetails);
 
-// Validate restore-specific requirements when in restore mode
-if (env.MODE === 'restore') {
+// Validate mode-specific requirements
+if (env.MODE === 'backup') {
+  if (!env.BACKUP_DATABASE_URL) {
+    console.error("BACKUP_DATABASE_URL is required when MODE=backup");
+    process.exit(1);
+  }
+} else if (env.MODE === 'restore') {
   if (!env.RESTORE_DATABASE_URL) {
     console.error("RESTORE_DATABASE_URL is required when MODE=restore");
     process.exit(1);
