@@ -8,7 +8,7 @@ import { extractDatabaseHost } from "./util.js";
 // Display startup banner with configuration
 const executionMode =
   env.MODE === 'backup'
-    ? (env.SINGLE_SHOT_MODE ? 'SINGLE-SHOT' : env.RUN_ON_STARTUP ? 'STARTUP+CRON' : 'CRON')
+    ? (env.BACKUP_SINGLE_SHOT_MODE ? 'SINGLE-SHOT' : env.BACKUP_RUN_ON_STARTUP ? 'STARTUP+CRON' : 'CRON')
     : (env.RESTORE_SINGLE_SHOT_MODE ? 'SINGLE-SHOT' : env.RESTORE_RUN_ON_STARTUP ? 'STARTUP+CRON' : 'CRON');
 
 const cronSchedule = env.MODE === 'backup' ? env.BACKUP_CRON_SCHEDULE : env.RESTORE_CRON_SCHEDULE;
@@ -21,7 +21,7 @@ const bannerDetails: Record<string, string> = {
 };
 
 // Add cron schedule if in cron mode
-if (!env.SINGLE_SHOT_MODE && !env.RESTORE_SINGLE_SHOT_MODE) {
+if (!env.BACKUP_SINGLE_SHOT_MODE && !env.RESTORE_SINGLE_SHOT_MODE) {
   bannerDetails["Cron Schedule"] = cronSchedule || 'none';
 }
 
@@ -81,18 +81,18 @@ const executeOperation = async () => {
 
 // Handle startup execution modes
 if (env.MODE === 'backup') {
-  if (env.RUN_ON_STARTUP || env.SINGLE_SHOT_MODE) {
+  if (env.BACKUP_RUN_ON_STARTUP || env.BACKUP_SINGLE_SHOT_MODE) {
     log("[BACKUP MODE] Running backup on startup...");
 
     await tryBackup();
 
-    if (env.SINGLE_SHOT_MODE) {
+    if (env.BACKUP_SINGLE_SHOT_MODE) {
       log("[BACKUP MODE] Backup complete, exiting...");
       process.exit(0);
     }
   }
 
-  if (!env.SINGLE_SHOT_MODE) {
+  if (!env.BACKUP_SINGLE_SHOT_MODE) {
     const backupJob = new CronJob(env.BACKUP_CRON_SCHEDULE, async () => {
       await tryBackup();
     });

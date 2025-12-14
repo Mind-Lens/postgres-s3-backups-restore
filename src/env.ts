@@ -34,7 +34,7 @@ export const env = envsafe({
     default: false,
     allowEmpty: true
   }),
-  RUN_ON_STARTUP: bool({
+  BACKUP_RUN_ON_STARTUP: bool({
     desc: 'Run a backup on startup of this application',
     default: false,
     allowEmpty: true,
@@ -48,7 +48,7 @@ export const env = envsafe({
     default: '',
     allowEmpty: true
   }),
-  SINGLE_SHOT_MODE: bool({
+  BACKUP_SINGLE_SHOT_MODE: bool({
     desc: 'Run a single backup on start and exit when completed',
     default: false,
     allowEmpty: true,
