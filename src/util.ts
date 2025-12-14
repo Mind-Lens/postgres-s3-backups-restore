@@ -62,3 +62,33 @@ export const createSecureTempPath = async (filename: string): Promise<string> =>
 
   return filepath;
 };
+
+/**
+ * Extract database host and port from PostgreSQL connection URL
+ * Masks credentials for safe logging
+ * Handles both network connections and unix socket paths
+ */
+export const extractDatabaseHost = (databaseUrl: string): string => {
+  try {
+    // Handle unix socket paths like postgresql:///dbname?host=/run/postgresql
+    if (databaseUrl.includes('?host=')) {
+      const urlObj = new URL(databaseUrl);
+      const host = urlObj.searchParams.get('host');
+      const dbName = urlObj.pathname.replace('/', '');
+      if (host) {
+        return `${host}:5432/${dbName}`;
+      }
+    }
+
+    // Parse standard PostgreSQL URL: postgresql://user:pass@host:port/database
+    const urlObj = new URL(databaseUrl);
+    const host = urlObj.hostname;
+    const port = urlObj.port || '5432';
+    const database = urlObj.pathname.replace('/', '');
+
+    return `${host}:${port}/${database}`;
+  } catch (error) {
+    // If URL parsing fails, return a safe fallback
+    return '[invalid URL]';
+  }
+};

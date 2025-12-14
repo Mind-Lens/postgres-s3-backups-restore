@@ -6,15 +6,18 @@ import { filesize } from "filesize";
 import path from "path";
 
 import { env } from "./env.js";
-import { createMD5, createS3Client, getS3Key, escapeShellArg, createSecureTempPath } from "./util.js";
+import { createMD5, createS3Client, getS3Key, escapeShellArg, createSecureTempPath, extractDatabaseHost } from "./util.js";
+import { log, logStderr } from "./logger.js";
 
 const uploadToS3 = async ({ name, path }: { name: string, path: string }) => {
-  console.log("Uploading backup to S3...");
+  const s3Key = getS3Key(name);
+  log(`Uploading backup to S3...`);
+  log(`  - Bucket: ${env.AWS_S3_BUCKET}`);
+  log(`  - Key: ${s3Key}`);
+  log(`  - Size: ${filesize(statSync(path).size)}`);
 
   const bucket = env.AWS_S3_BUCKET;
   const client = createS3Client();
-  
-  const s3Key = getS3Key(name);
 
   let params: PutObjectCommandInput = {
     Bucket: bucket,
@@ -23,11 +26,11 @@ const uploadToS3 = async ({ name, path }: { name: string, path: string }) => {
   }
 
   if (env.SUPPORT_OBJECT_LOCK) {
-    console.log("MD5 hashing file...");
+    log("  - Calculating MD5 hash (object lock enabled)...");
 
     const md5Hash = await createMD5(path);
 
-    console.log("Done hashing file");
+    log("  - MD5 hash calculated");
 
     params.ContentMD5 = Buffer.from(md5Hash, 'hex').toString('base64');
   }
@@ -37,11 +40,17 @@ const uploadToS3 = async ({ name, path }: { name: string, path: string }) => {
     params: params
   }).done();
 
-  console.log("Backup uploaded to S3...");
+  log("Backup uploaded to S3 successfully");
 }
 
 const dumpToFile = async (filePath: string) => {
-  console.log("Dumping DB to file...");
+  const dbHost = extractDatabaseHost(env.BACKUP_DATABASE_URL);
+  log(`Dumping database to file...`);
+  log(`  - Connecting to: ${dbHost}`);
+  log(`  - Format: tar + gzip`);
+  if (env.BACKUP_OPTIONS) {
+    log(`  - Options: ${env.BACKUP_OPTIONS}`);
+  }
 
   await new Promise((resolve, reject) => {
     // Escape shell arguments to prevent command injection
@@ -65,26 +74,26 @@ const dumpToFile = async (filePath: string) => {
 
       // not all text in stderr will be a critical error, print the error / warning
       if (stderr != "") {
-        console.log({ stderr: stderr.trimEnd() });
+        logStderr(stderr.trimEnd(), "pg_dump");
       }
 
-      console.log("Backup archive file is valid");
-      console.log("Backup filesize:", filesize(statSync(filePath).size));
+      log(`  - Archive validated successfully`);
+      log(`  - File size: ${filesize(statSync(filePath).size)}`);
 
       // if stderr contains text, let the user know that it was potently just a warning message
       if (stderr != "") {
-        console.log(`Potential warnings detected; Please ensure the backup file "${path.basename(filePath)}" contains all needed data`);
+        log(`  - Note: stderr output detected (may be warnings). Verify backup if needed.`);
       }
 
       resolve(undefined);
     });
   });
 
-  console.log("DB dumped to file...");
+  log("Database dump completed");
 }
 
 const deleteFile = async (path: string) => {
-  console.log("Deleting file...");
+  log(`Cleaning up temporary file...`);
   await new Promise((resolve, reject) => {
     unlink(path, (err) => {
       if (err) {
@@ -97,11 +106,15 @@ const deleteFile = async (path: string) => {
 }
 
 export const backup = async () => {
-  console.log("Initiating DB backup...");
-
-  const date = new Date().toISOString();
-  const timestamp = date.replace(/[:.]+/g, '-');
+  const startTime = new Date();
+  const timestamp = startTime.toISOString().replace(/[:.]+/g, '-');
   const filename = `${env.BACKUP_FILE_PREFIX}-${timestamp}.tar.gz`;
+
+  log("=".repeat(50));
+  log("BACKUP STARTED");
+  log(`  - Timestamp: ${startTime.toISOString()}`);
+  log(`  - Filename: ${filename}`);
+  log("=".repeat(50));
 
   // Create secure temp file with restricted permissions (0600)
   const filepath = await createSecureTempPath(filename);
@@ -110,5 +123,13 @@ export const backup = async () => {
   await uploadToS3({ name: filename, path: filepath });
   await deleteFile(filepath);
 
-  console.log("DB backup complete...");
+  const endTime = new Date();
+  const durationMs = endTime.getTime() - startTime.getTime();
+  const durationSec = (durationMs / 1000).toFixed(2);
+
+  log("=".repeat(50));
+  log("BACKUP COMPLETED");
+  log(`  - Duration: ${durationSec}s`);
+  log(`  - End time: ${endTime.toISOString()}`);
+  log("=".repeat(50));
 }

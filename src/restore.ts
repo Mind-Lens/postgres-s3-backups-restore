@@ -2,16 +2,19 @@ import { exec, execSync } from "child_process";
 import { GetObjectCommand } from "@aws-sdk/client-s3";
 import { createWriteStream, unlink } from "fs";
 import path from "path";
-import { createS3Client, getS3Key, escapeShellArg, createSecureTempPath } from "./util.js";
+import { createS3Client, getS3Key, escapeShellArg, createSecureTempPath, extractDatabaseHost } from "./util.js";
 import { env } from "./env.js";
+import { log, logStderr, formatAge } from "./logger.js";
 
 const downloadFromS3 = async (key: string): Promise<string> => {
-  console.log("Downloading backup from S3...");
+  const s3Key = getS3Key(key);
+  log(`Downloading backup from S3...`);
+  log(`  - Bucket: ${env.AWS_S3_BUCKET}`);
+  log(`  - Key: ${s3Key}`);
 
   const bucket = env.AWS_S3_BUCKET;
   const client = createS3Client();
 
-  const s3Key = getS3Key(key);
   const filename = path.basename(s3Key);
 
   // Create secure temp file with restricted permissions (0600)
@@ -38,26 +41,26 @@ const downloadFromS3 = async (key: string): Promise<string> => {
     writeStream.on('error', (error) => reject(error));
   });
 
-  console.log(`Downloaded backup to ${filepath}`);
+  log(`Downloaded backup to ${filepath}`);
   return filepath;
 };
 
 const validateArchive = async (filepath: string): Promise<void> => {
-  console.log("Validating archive integrity...");
+  log("Validating archive integrity...");
 
   const escapedFilepath = escapeShellArg(filepath);
 
   try {
     // Test that the gzip file can be decompressed
     execSync(`gunzip -t ${escapedFilepath} 2>&1`);
-    console.log("Archive validation successful");
+    log("  - Archive validation successful");
   } catch (error: any) {
     throw new Error(`Archive validation failed: ${error.message}`);
   }
 };
 
 const decompressFile = async (filepath: string): Promise<string> => {
-  console.log("Decompressing backup file...");
+  log("Decompressing backup file...");
 
   const decompressedPath = filepath.replace('.gz', '');
 
@@ -73,22 +76,27 @@ const decompressFile = async (filepath: string): Promise<string> => {
       }
 
       if (stderr) {
-        console.log({ stderr: stderr.trimEnd() });
+        logStderr(stderr.trimEnd(), "gunzip");
       }
 
       resolve();
     });
   });
 
-  console.log(`Decompressed file to ${decompressedPath}`);
+  log(`  - Decompressed to ${path.basename(decompressedPath)}`);
   return decompressedPath;
 };
 
 const restoreFromFile = async (filepath: string) => {
-  console.log("Restoring database from backup...");
-
   if (!env.RESTORE_DATABASE_URL) {
     throw new Error("RESTORE_DATABASE_URL is required for restore mode");
+  }
+
+  const dbHost = extractDatabaseHost(env.RESTORE_DATABASE_URL);
+  log("Restoring database from backup...");
+  log(`  - Connecting to: ${dbHost}`);
+  if (env.RESTORE_OPTIONS) {
+    log(`  - Options: ${env.RESTORE_OPTIONS}`);
   }
 
   await new Promise<void>((resolve, reject) => {
@@ -104,18 +112,18 @@ const restoreFromFile = async (filepath: string) => {
       }
 
       if (stderr) {
-        console.log({ stderr: stderr.trimEnd() });
+        logStderr(stderr.trimEnd(), "pg_restore");
       }
 
       resolve();
     });
   });
 
-  console.log("Database restore completed");
+  log("Database restore completed");
 };
 
 const deleteFile = async (filepath: string) => {
-  console.log("Deleting file...");
+  log(`Cleaning up temporary file...`);
   await new Promise<void>((resolve, reject) => {
     unlink(filepath, (err) => {
       if (err) {
@@ -128,43 +136,61 @@ const deleteFile = async (filepath: string) => {
 };
 
 const getLatestBackupKey = async (): Promise<string> => {
-  console.log("Getting latest backup key from S3...");
-  
+  log("Getting latest backup from S3...");
+
   const bucket = env.AWS_S3_BUCKET;
   const client = createS3Client();
   const s3KeyPrefix = env.BUCKET_SUBFOLDER ? env.BUCKET_SUBFOLDER + "/" : "";
   const searchPrefix = s3KeyPrefix + env.BACKUP_FILE_PREFIX + "-";
-  
+
+  log(`  - Searching: ${bucket}/${searchPrefix}*`);
+
   const { ListObjectsV2Command } = await import("@aws-sdk/client-s3");
-  
+
   const command = new ListObjectsV2Command({
     Bucket: bucket,
     Prefix: searchPrefix,
   });
-  
+
   const response = await client.send(command);
-  
+
   if (!response.Contents || response.Contents.length === 0) {
     throw new Error(`No backup files found with prefix: ${searchPrefix}`);
   }
-  
+
+  log(`  - Found ${response.Contents.length} backup file(s)`);
+
   // Sort by LastModified and get the latest
   const latest = response.Contents.sort((a, b) => {
     const timeA = a.LastModified ? a.LastModified.getTime() : 0;
     const timeB = b.LastModified ? b.LastModified.getTime() : 0;
     return timeB - timeA;
   })[0];
-  
+
   if (!latest.Key) {
     throw new Error("Could not determine latest backup key");
   }
-  
-  console.log(`Latest backup key: ${latest.Key}`);
+
+  const fileAge = latest.LastModified ? formatAge(latest.LastModified) : 'unknown';
+  log(`Latest backup: ${latest.Key}`);
+  log(`  - Age: ${fileAge}`);
+  log(`  - Last modified: ${latest.LastModified?.toISOString() || 'unknown'}`);
+
   return latest.Key;
 };
 
 export const restore = async () => {
-  console.log("Initiating DB restore...");
+  const startTime = new Date();
+
+  log("=".repeat(50));
+  log("RESTORE STARTED");
+  log(`  - Timestamp: ${startTime.toISOString()}`);
+  if (env.RESTORE_FILE_KEY) {
+    log(`  - Source: ${env.RESTORE_FILE_KEY} (specified)`);
+  } else {
+    log(`  - Source: Latest backup from S3`);
+  }
+  log("=".repeat(50));
 
   let downloadedPath: string | null = null;
   let decompressedPath: string | null = null;
@@ -185,9 +211,17 @@ export const restore = async () => {
     // Restore to PostgreSQL
     await restoreFromFile(decompressedPath);
 
-    console.log("DB restore complete...");
+    const endTime = new Date();
+    const durationMs = endTime.getTime() - startTime.getTime();
+    const durationSec = (durationMs / 1000).toFixed(2);
+
+    log("=".repeat(50));
+    log("RESTORE COMPLETED");
+    log(`  - Duration: ${durationSec}s`);
+    log(`  - End time: ${endTime.toISOString()}`);
+    log("=".repeat(50));
   } catch (error) {
-    console.error("Error during restore:", error);
+    log("RESTORE FAILED - See error details above");
     throw error;
   } finally {
     // Guaranteed cleanup of temporary files, even on error
@@ -195,7 +229,7 @@ export const restore = async () => {
       try {
         await deleteFile(downloadedPath);
       } catch (error) {
-        console.error("Warning: Failed to delete downloaded file:", error);
+        log("Warning: Failed to delete downloaded file");
       }
     }
 
@@ -203,7 +237,7 @@ export const restore = async () => {
       try {
         await deleteFile(decompressedPath);
       } catch (error) {
-        console.error("Warning: Failed to delete decompressed file:", error);
+        log("Warning: Failed to delete decompressed file");
       }
     }
   }

@@ -2,8 +2,42 @@ import { CronJob } from "cron";
 import { backup } from "./backup.js";
 import { restore } from "./restore.js";
 import { env } from "./env.js";
+import { logBanner, logError, log } from "./logger.js";
+import { extractDatabaseHost } from "./util.js";
 
-console.log("NodeJS Version: " + process.version);
+// Display startup banner with configuration
+const executionMode =
+  env.MODE === 'backup'
+    ? (env.SINGLE_SHOT_MODE ? 'SINGLE-SHOT' : env.RUN_ON_STARTUP ? 'STARTUP+CRON' : 'CRON')
+    : (env.RESTORE_SINGLE_SHOT_MODE ? 'SINGLE-SHOT' : env.RESTORE_RUN_ON_STARTUP ? 'STARTUP+CRON' : 'CRON');
+
+const cronSchedule = env.MODE === 'backup' ? env.BACKUP_CRON_SCHEDULE : env.RESTORE_CRON_SCHEDULE;
+
+const bannerDetails: Record<string, string> = {
+  "Mode": env.MODE.toUpperCase(),
+  "Node Version": process.version,
+  "Execution": executionMode,
+  "S3 Bucket": env.AWS_S3_BUCKET,
+};
+
+// Add cron schedule if in cron mode
+if (!env.SINGLE_SHOT_MODE && !env.RESTORE_SINGLE_SHOT_MODE) {
+  bannerDetails["Cron Schedule"] = cronSchedule || 'none';
+}
+
+// Add S3 subfolder if configured
+if (env.BUCKET_SUBFOLDER) {
+  bannerDetails["S3 Subfolder"] = env.BUCKET_SUBFOLDER;
+}
+
+// Add database connection info (host only, no credentials)
+if (env.MODE === 'backup') {
+  bannerDetails["Database"] = extractDatabaseHost(env.BACKUP_DATABASE_URL);
+} else if (env.RESTORE_DATABASE_URL) {
+  bannerDetails["Database"] = extractDatabaseHost(env.RESTORE_DATABASE_URL);
+}
+
+logBanner("PostgreSQL Backup/Restore Service", bannerDetails);
 
 // Validate restore-specific requirements when in restore mode
 if (env.MODE === 'restore') {
@@ -17,7 +51,7 @@ const tryBackup = async () => {
   try {
     await backup();
   } catch (error) {
-    console.error("Error while running backup: ", error);
+    logError("Backup failed", error);
     process.exit(1);
   }
 };
@@ -26,7 +60,7 @@ const tryRestore = async () => {
   try {
     await restore();
   } catch (error) {
-    console.error("Error while running restore: ", error);
+    logError("Restore failed", error);
     process.exit(1);
   }
 };
@@ -43,40 +77,44 @@ const executeOperation = async () => {
 // Handle startup execution modes
 if (env.MODE === 'backup') {
   if (env.RUN_ON_STARTUP || env.SINGLE_SHOT_MODE) {
-    console.log("Running on start backup...");
-    
+    log("[BACKUP MODE] Running backup on startup...");
+
     await tryBackup();
-    
+
     if (env.SINGLE_SHOT_MODE) {
-      console.log("Database backup complete, exiting...");
+      log("[BACKUP MODE] Backup complete, exiting...");
       process.exit(0);
     }
   }
-  
-  const backupJob = new CronJob(env.BACKUP_CRON_SCHEDULE, async () => {
-    await tryBackup();
-  });
-  
-  backupJob.start();
-  console.log("Backup cron scheduled...");
+
+  if (!env.SINGLE_SHOT_MODE) {
+    const backupJob = new CronJob(env.BACKUP_CRON_SCHEDULE, async () => {
+      await tryBackup();
+    });
+
+    backupJob.start();
+    const nextRun = backupJob.nextDate();
+    log(`[BACKUP MODE] Cron scheduled: ${env.BACKUP_CRON_SCHEDULE} (next run: ${nextRun.toISO()})`);
+  }
 } else if (env.MODE === 'restore') {
   if (env.RESTORE_RUN_ON_STARTUP || env.RESTORE_SINGLE_SHOT_MODE) {
-    console.log("Running on start restore...");
-    
+    log("[RESTORE MODE] Running restore on startup...");
+
     await tryRestore();
-    
+
     if (env.RESTORE_SINGLE_SHOT_MODE) {
-      console.log("Database restore complete, exiting...");
+      log("[RESTORE MODE] Restore complete, exiting...");
       process.exit(0);
     }
   }
-  
-  if (env.RESTORE_CRON_SCHEDULE) {
+
+  if (env.RESTORE_CRON_SCHEDULE && !env.RESTORE_SINGLE_SHOT_MODE) {
     const restoreJob = new CronJob(env.RESTORE_CRON_SCHEDULE, async () => {
       await tryRestore();
     });
-    
+
     restoreJob.start();
-    console.log("Restore cron scheduled...");
+    const nextRun = restoreJob.nextDate();
+    log(`[RESTORE MODE] Cron scheduled: ${env.RESTORE_CRON_SCHEDULE} (next run: ${nextRun.toISO()})`);
   }
 }
